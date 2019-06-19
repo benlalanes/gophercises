@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io/ioutil"
@@ -12,6 +13,7 @@ import (
 )
 
 var pathsfile string
+var useJSON bool
 
 // YAMLHandler returns an HTTP handler that shortens URLs by redirecting
 // requests according to the specified YAML configuration.
@@ -21,19 +23,33 @@ func YAMLHandler(y []byte, fallback http.Handler) (http.HandlerFunc, error) {
 		return nil, err
 	}
 
-	f := func(w http.ResponseWriter, r *http.Request) {
-		if to, ok := m[r.URL.Path]; ok {
+	return mapHandler(m, fallback), nil
+}
+
+// JSONHandler returns an HTTP handler that shortens URLs by redirecting
+// requests according to the specified JSON configuration.
+func JSONHandler(j []byte, fallback http.Handler) (http.HandlerFunc, error) {
+	m := make(map[string]string)
+	if err := json.Unmarshal(j, &m); err != nil {
+		return nil, err
+	}
+
+	return mapHandler(m, fallback), nil
+}
+
+func mapHandler(redirects map[string]string, fallback http.Handler) http.HandlerFunc {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if to, ok := redirects[r.URL.Path]; ok {
 			http.Redirect(w, r, to, http.StatusFound)
 		} else {
 			fallback.ServeHTTP(w, r)
 		}
-	}
-
-	return http.HandlerFunc(f), nil
+	})
 }
 
 func init() {
 	flag.StringVar(&pathsfile, "paths", "", "YAML file containing paths")
+	flag.BoolVar(&useJSON, "json", false, "specify to use a JSON file")
 }
 
 func main() {
@@ -59,7 +75,14 @@ func main() {
 		fmt.Fprintln(w, "No redirect found for specified path.")
 	})
 
-	handler, err := YAMLHandler(b, fallback)
+	var handler http.HandlerFunc
+
+	if useJSON {
+		handler, err = JSONHandler(b, fallback)
+	} else {
+		handler, err = YAMLHandler(b, fallback)
+	}
+
 	if err != nil {
 		log.Fatal(err)
 	}
