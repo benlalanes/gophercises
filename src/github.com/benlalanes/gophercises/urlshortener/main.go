@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io/ioutil"
@@ -9,11 +10,13 @@ import (
 	"net/http"
 	"os"
 
+	"github.com/boltdb/bolt"
 	"gopkg.in/yaml.v2"
 )
 
 var pathsfile string
 var useJSON bool
+var useBoltDB bool
 
 // YAMLHandler returns an HTTP handler that shortens URLs by redirecting
 // requests according to the specified YAML configuration.
@@ -37,6 +40,32 @@ func JSONHandler(j []byte, fallback http.Handler) (http.HandlerFunc, error) {
 	return mapHandler(m, fallback), nil
 }
 
+func BoltDBHandler(dbpath string, fallback http.Handler) (http.HandlerFunc, error) {
+	m := make(map[string]string)
+
+	db, err := bolt.Open(dbpath, 0600, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	db.View(func(tx *bolt.Tx) error {
+		b := tx.Bucket([]byte("Redirects"))
+		if b == nil {
+			return errors.New("bucket 'Redirects' does not exist")
+		}
+
+		c := b.Cursor()
+
+		for k, v := c.First(); k != nil; k, v = c.Next() {
+			m[string(k)] = string(v)
+		}
+
+		return nil
+	})
+
+	return mapHandler(m, fallback), nil
+}
+
 func mapHandler(redirects map[string]string, fallback http.Handler) http.HandlerFunc {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if to, ok := redirects[r.URL.Path]; ok {
@@ -48,8 +77,9 @@ func mapHandler(redirects map[string]string, fallback http.Handler) http.Handler
 }
 
 func init() {
-	flag.StringVar(&pathsfile, "paths", "", "YAML file containing paths")
+	flag.StringVar(&pathsfile, "paths", "", "file containing paths")
 	flag.BoolVar(&useJSON, "json", false, "specify to use a JSON file")
+	flag.BoolVar(&useBoltDB, "bolt", false, "specify to use a BoltDB file")
 }
 
 func main() {
@@ -58,6 +88,10 @@ func main() {
 
 	if pathsfile == "" {
 		log.Fatal("-paths argument is required")
+	}
+
+	if useJSON && useBoltDB {
+		log.Fatal("only one of useJSON, useBoltDB can be specified")
 	}
 
 	f, err := os.Open(pathsfile)
@@ -79,6 +113,8 @@ func main() {
 
 	if useJSON {
 		handler, err = JSONHandler(b, fallback)
+	} else if useBoltDB {
+		handler, err = BoltDBHandler("redirects.db", fallback)
 	} else {
 		handler, err = YAMLHandler(b, fallback)
 	}
